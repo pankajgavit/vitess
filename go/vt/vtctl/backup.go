@@ -20,8 +20,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"golang.org/x/net/context"
 	"io"
+
+	"golang.org/x/net/context"
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
@@ -105,7 +106,7 @@ func commandBackupShard(ctx context.Context, wr *wrangler.Wrangler, subFlags *fl
 	return prepareBackup(ctx, wr, keyspace, shard, concurrency, allowMaster)
 }
 
-func prepareBackup(ctx context.Context, wr *wrangler.Wrangler, keyspace, shard string, concurrency *int, allowMaster *bool) error{
+func prepareBackup(ctx context.Context, wr *wrangler.Wrangler, keyspace, shard string, concurrency *int, allowMaster *bool) error {
 	tablets, stats, err := wr.ShardReplicationStatuses(ctx, keyspace, shard)
 	if tablets == nil {
 		return err
@@ -180,7 +181,7 @@ func commandBackupKeyspace(ctx context.Context, wr *wrangler.Wrangler, subFlags 
 
 	for _, shard := range shardsInfo {
 		go func(shardName string) {
-			err = prepareBackup(ctx, wr, keyspace,  shardName, concurrency, allowMaster)
+			err = prepareBackup(ctx, wr, keyspace, shardName, concurrency, allowMaster)
 			ch := done // we'll send to done if nil error and to errc otherwise
 			if err != nil {
 				ch = errc
