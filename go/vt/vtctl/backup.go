@@ -20,9 +20,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
-
 	"golang.org/x/net/context"
+	"io"
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
@@ -41,6 +40,11 @@ func init() {
 		commandBackupShard,
 		"[-allow_master=false] <keyspace/shard>",
 		"Chooses a tablet and creates a backup for a shard."})
+	addCommand("Shards", command{
+		"BackupKeyspace",
+		commandBackupKeyspace,
+		"[-allow_master=false] <keyspace>",
+		"Chooses a keyspace and creates a backup for all the shards present in the keyspace."})
 	addCommand("Shards", command{
 		"RemoveBackup",
 		commandRemoveBackup,
@@ -98,6 +102,10 @@ func commandBackupShard(ctx context.Context, wr *wrangler.Wrangler, subFlags *fl
 		return err
 	}
 
+	return prepareBackup(ctx, wr, keyspace, shard, concurrency, allowMaster)
+}
+
+func prepareBackup(ctx context.Context, wr *wrangler.Wrangler, keyspace, shard string, concurrency *int, allowMaster *bool) error{
 	tablets, stats, err := wr.ShardReplicationStatuses(ctx, keyspace, shard)
 	if tablets == nil {
 		return err
@@ -149,7 +157,58 @@ func commandBackupShard(ctx context.Context, wr *wrangler.Wrangler, subFlags *fl
 	return execBackup(ctx, wr, tabletForBackup, *concurrency, *allowMaster)
 }
 
-// execBackup is shared by Backup and BackupShard
+func commandBackupKeyspace(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
+	concurrency := subFlags.Int("concurrency", 4, "Specifies the number of compression/checksum jobs to run simultaneously")
+	allowMaster := subFlags.Bool("allow_master", false, "Whether to use master tablet for backup. Warning!! If you are using the builtin backup engine, this will shutdown your master mysql for as long as it takes to create a backup ")
+
+	if err := subFlags.Parse(args); err != nil {
+		return err
+	}
+	if subFlags.NArg() != 1 {
+		return fmt.Errorf("action BackupKeyspace requires <keyspace1>")
+	}
+
+	keyspace := subFlags.Arg(0)
+	shardsInfo, err := wr.TopoServer().FindAllShardsInKeyspace(ctx, keyspace)
+	if err != nil {
+		return err
+	}
+
+	quit := make(chan bool)
+	errc := make(chan error)
+	done := make(chan error)
+
+	for _, shard := range shardsInfo {
+		go func(shardName string) {
+			err = prepareBackup(ctx, wr, keyspace,  shardName, concurrency, allowMaster)
+			ch := done // we'll send to done if nil error and to errc otherwise
+			if err != nil {
+				ch = errc
+			}
+			select {
+			case ch <- err:
+				return
+			case <-quit:
+				return
+			}
+		}(shard.ShardName())
+	}
+	count := 0
+	for {
+		select {
+		case err := <-errc:
+			close(quit)
+			return err
+		case <-done:
+			count++
+			if count == len(shardsInfo) {
+				return nil // got all N signals, so there was no error
+			}
+		}
+	}
+}
+
+// execBackup is shared by Backup, BackupShard and BackupKeyspace
 func execBackup(ctx context.Context, wr *wrangler.Wrangler, tablet *topodatapb.Tablet, concurrency int, allowMaster bool) error {
 	stream, err := wr.TabletManagerClient().Backup(ctx, tablet, concurrency, allowMaster)
 	if err != nil {
